@@ -1,0 +1,142 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ template "fullname" . }}-application
+  labels:
+    app.kubernetes.io/name: {{ include "name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/version: {{ .Chart.AppVersion }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/component: application
+    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: application
+{{- if .Values.autoscaling.enabled }}
+  replicas: {{ .Values.autoscaling.minReplicas }}
+{{- else }}
+  replicas: {{ .Values.deployment.replicaCount }}
+{{- end }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: {{ .Values.deployment.maxUnavailable }}
+      maxSurge: {{ .Values.deployment.maxSurge }}
+  revisionHistoryLimit: {{ .Values.deployment.revisionHistoryLimit }}
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.service.targetPort | quote }}
+      {{- if .Values.deployment.podAnnotations }}
+        {{ toYaml .Values.deployment.podAnnotations | nindent 8 }}
+      {{- end }}
+      labels:
+        app.kubernetes.io/name: {{ include "name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: application
+    spec:
+      {{- if .Values.deployment.securityContext.enabled }}
+      securityContext:
+        fsGroup: {{ .Values.deployment.securityContext.fsGroup }}
+        runAsUser: {{ .Values.deployment.securityContext.runAsUser }}
+      {{- end }}
+      {{- if .Values.deployment.serviceAccountName }}
+      serviceAccountName: {{ .Values.deployment.serviceAccountName }}
+      {{- end }}
+      containers:
+      - name: "{{ .Chart.Name }}"
+        image: "{{ .Values.deployment.image.repository }}:{{ .Values.deployment.image.tag }}"
+        {{- with .Values.deployment.command }}
+        {{- range $key, $val := . }}
+        {{ $key }}: {{ $val | quote }}
+        {{- end}}
+        {{- end }}
+        {{- with .Values.deployment.args }}
+        {{- range $key, $val := . }}
+        {{ $key }}: {{ $val | quote }}
+        {{- end}}
+        {{- end }}
+        imagePullPolicy: {{ .Values.deployment.image.pullPolicy }}
+        env:
+          - name: PORT
+            value: {{ .Values.service.targetPort | quote }}
+          - name: MONGODB_HOST
+            value: {{ include "call-nested" (list . "mongodb" "mongodb.fullname") }}
+          {{- if and .Values.mongodb.existingSecret (not .Values.mongodb.mongodbUsername) }}
+          - name: MONGODB_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.mongodb.existingSecret }}
+                key: mongodb-username
+          {{- else }}
+          - name: MONGODB_USERNAME
+            value: {{ default "" .Values.mongodb.mongodbUsername | quote }}
+          {{- end }}
+          {{- if and .Values.mongodb.usePassword .Values.mongodb.mongodbDatabase }}
+          - name: MONGODB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: {{ if .Values.mongodb.existingSecret }}{{ .Values.mongodb.existingSecret }}{{- else }}{{ include "call-nested" (list . "mongodb" "mongodb.fullname") }}{{- end }}
+                key: mongodb-password
+          {{- end }}
+          - name: MONGODB_DATABASE
+            value: {{ default "" .Values.mongodb.mongodbDatabase | quote }}
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          - name: POD_IMAGE
+            value: "{{ .Values.deployment.image.repository }}:{{ .Values.deployment.image.tag }}"
+        {{- range .Values.deployment.envSecrets }}
+          - name: {{ .name }}
+            valueFrom:
+              secretKeyRef:
+                {{ toYaml .secretKeyRef | nindent 16 }}
+        {{- end }}
+        {{- range .Values.deployment.envConfigMaps }}
+          - name: {{ .name }}
+            valueFrom:
+              configMapKeyRef:
+                {{ toYaml .configMapKeyRef | nindent 16 }}
+        {{- end }}
+        {{- range .Values.deployment.envResourceField }}
+          - name: {{ .name }}
+            valueFrom:
+              resourceFieldRef:
+                {{ toYaml .resourceFieldRef | nindent 16 }}
+        {{- end }}
+        {{- range .Values.deployment.env }}
+          - name: {{ .name }}
+            value: {{ .value | quote }}
+        {{- end }}
+        {{- if .Values.deployment.resources }}
+        resources:
+          {{ toYaml .Values.deployment.resources | nindent 10 }}
+        {{- end }}
+        ports:
+        - containerPort: {{ .Values.service.targetPort }}
+          name: http
+        {{- if .Values.deployment.livenessProbe.enabled }}
+        livenessProbe:
+          httpGet:
+            path: {{ .Values.deployment.livenessProbe.path }}
+            port: http
+          initialDelaySeconds: {{ .Values.deployment.livenessProbe.initialDelaySeconds }}
+          periodSeconds: {{ .Values.deployment.livenessProbe.periodSeconds }}
+        {{- end }}
+        {{- if .Values.deployment.readinessProbe.enabled }}
+        readinessProbe:
+          httpGet:
+            path: {{ .Values.deployment.readinessProbe.path }}
+            port: http
+          initialDelaySeconds: {{ .Values.deployment.readinessProbe.initialDelaySeconds }}
+          periodSeconds: {{ .Values.deployment.readinessProbe.periodSeconds }}
+        {{- end }}
